@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import select
+import socket
+import struct
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
 import disnake
 from disnake.ext import commands
-from mcrcon import MCRcon
 
 import config
 
@@ -17,6 +20,10 @@ logger = logging.getLogger("LunacyTickets.Tickets")
 
 MC_NICKNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 CHANNEL_SAFE_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+class RconError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -225,11 +232,57 @@ async def create_ticket_channel(
     await interaction.response.send_message(f"Тикет создан: {channel.mention}", ephemeral=True)
 
 
+def recv_exact(sock: socket.socket, length: int) -> bytes:
+    data = b""
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise RconError("RCON connection closed unexpectedly")
+        data += chunk
+    return data
+
+
+def send_rcon_packet(sock: socket.socket, request_id: int, request_type: int, payload: str) -> None:
+    packet = struct.pack("<ii", request_id, request_type) + payload.encode("utf-8") + b"\x00\x00"
+    sock.sendall(struct.pack("<i", len(packet)) + packet)
+
+
+def read_rcon_response(sock: socket.socket) -> str:
+    response = ""
+    while True:
+        packet_length = struct.unpack("<i", recv_exact(sock, 4))[0]
+        packet = recv_exact(sock, packet_length)
+
+        request_id, _request_type = struct.unpack("<ii", packet[:8])
+        body = packet[8:-2]
+        padding = packet[-2:]
+
+        if padding != b"\x00\x00":
+            raise RconError("RCON response has invalid padding")
+        if request_id == -1:
+            raise RconError("RCON authentication failed")
+
+        response += body.decode("utf-8", errors="replace")
+
+        if not select.select([sock], [], [], 0)[0]:
+            return response
+
+
+def run_rcon_command(command: str) -> str:
+    with socket.create_connection((config.RCON_HOST, config.RCON_PORT), timeout=5) as sock:
+        sock.settimeout(5)
+        send_rcon_packet(sock, 1, 3, config.RCON_PASSWORD)
+        read_rcon_response(sock)
+        send_rcon_packet(sock, 2, 2, command)
+        response = read_rcon_response(sock)
+        time.sleep(0.003)
+        return response
+
+
 def run_whitelist_command(nickname: str) -> str:
     command = config.WHITELIST_COMMAND_TEMPLATE.format(nickname=nickname)
     command = command[1:] if command.startswith("/") else command
-    with MCRcon(config.RCON_HOST, config.RCON_PASSWORD, port=config.RCON_PORT) as rcon:
-        return rcon.command(command)
+    return run_rcon_command(command)
 
 
 class PassTicketPanelView(disnake.ui.View):
