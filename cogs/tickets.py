@@ -334,7 +334,6 @@ class PassTicketModal(disnake.ui.Modal):
                 label="Ваш игровой ник",
                 custom_id="nickname",
                 style=disnake.TextInputStyle.short,
-                placeholder="kinya169",
                 min_length=3,
                 max_length=16,
                 required=True,
