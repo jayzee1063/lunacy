@@ -602,6 +602,7 @@ class PassTicketControlView(BaseTicketControlView):
 
         role_granted = False
         role_status = "Роль выдана."
+        remove_role_status: str | None = None
         if member and role:
             try:
                 await member.add_roles(role, reason=f"Whitelist ticket approved by {interaction.user}")
@@ -627,6 +628,33 @@ class PassTicketControlView(BaseTicketControlView):
         elif not member:
             role_status = "Роль не выдана: автор тикета не найден на Discord-сервере."
 
+        if role_granted and member and guild and config.REMOVE_ROLE_AFTER_ACCEPT_ID:
+            role_to_remove = guild.get_role(config.REMOVE_ROLE_AFTER_ACCEPT_ID)
+            if not role_to_remove:
+                remove_role_status = "Не удалось снять старую роль: роль не найдена на Discord-сервере."
+            elif role_to_remove in member.roles:
+                try:
+                    await member.remove_roles(
+                        role_to_remove,
+                        reason=f"Whitelist ticket approved by {interaction.user}",
+                    )
+                except disnake.Forbidden:
+                    logger.warning(
+                        "Cannot remove role %s from %s: missing Discord permissions or role hierarchy.",
+                        role_to_remove.id,
+                        member.id,
+                    )
+                    remove_role_status = (
+                        "Не удалось снять старую роль: у бота нет прав или его роль ниже снимаемой роли "
+                        "в иерархии Discord."
+                    )
+                except disnake.HTTPException as error:
+                    logger.exception("Cannot remove role %s from %s", role_to_remove.id, member.id)
+                    remove_role_status = f"Не удалось снять старую роль: Discord API вернул ошибку `{error}`."
+                except Exception as error:
+                    logger.exception("Unexpected role removal error")
+                    remove_role_status = f"Не удалось снять старую роль: `{error}`."
+
         dm_sent = await send_dm(
             interaction,
             title="Lunacy | Заявка одобрена",
@@ -644,6 +672,8 @@ class PassTicketControlView(BaseTicketControlView):
         )
         if not role_granted:
             embed.add_field(name="Роль", value=role_status, inline=False)
+        if remove_role_status:
+            embed.add_field(name="Снятие роли", value=remove_role_status, inline=False)
         if not dm_sent:
             embed.add_field(name="ЛС", value="Не удалось отправить сообщение автору тикета.", inline=False)
 
