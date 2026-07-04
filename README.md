@@ -5,6 +5,7 @@ Discord-бот для тикетов Lunacy:
 - заявки на проходку;
 - жалобы;
 - предложения;
+- заявки на вознаграждения;
 - одобрение проходки с добавлением ника в whitelist через RCON;
 - выдача Discord-роли после одобрения.
 
@@ -28,6 +29,7 @@ copy .env.example .env
 /setup_pass_tickets
 /setup_complaint_tickets
 /setup_suggestion_tickets
+/setup_reward_tickets
 ```
 
 Запасные prefix-команды:
@@ -36,6 +38,7 @@ copy .env.example .env
 !setup_pass_tickets
 !setup_complaint_tickets
 !setup_suggestion_tickets
+!setup_reward_tickets
 ```
 
 ## Важно

@@ -197,6 +197,7 @@ async def create_ticket_channel(
         "pass": "pass",
         "complaint": "complaint",
         "suggestion": "suggestion",
+        "reward": "reward",
     }.get(ticket_type, "ticket")
 
     channel = await guild.create_text_channel(
@@ -325,6 +326,20 @@ class SuggestionTicketPanelView(disnake.ui.View):
     )
     async def open_ticket(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
         await interaction.response.send_modal(SuggestionTicketModal())
+
+
+class RewardTicketPanelView(disnake.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @disnake.ui.button(
+        label="Подать заявку на вознаграждение",
+        style=disnake.ButtonStyle.success,
+        emoji="🎁",
+        custom_id="lunacy_ticket:create:reward",
+    )
+    async def open_ticket(self, button: disnake.ui.Button, interaction: disnake.MessageInteraction):
+        await interaction.response.send_modal(RewardTicketModal())
 
 
 class PassTicketModal(disnake.ui.Modal):
@@ -493,6 +508,50 @@ class SuggestionTicketModal(disnake.ui.Modal):
                 ("1) Ваш игровой ник", interaction.text_values["nickname"]),
                 ("2) Суть бага либо идеи", interaction.text_values["details"]),
                 ("3) Видео/фото при наличии", interaction.text_values.get("proof") or "Не приложено"),
+            ],
+        )
+
+
+class RewardTicketModal(disnake.ui.Modal):
+    def __init__(self):
+        components = [
+            disnake.ui.TextInput(
+                label="Ваш игровой ник",
+                custom_id="nickname",
+                style=disnake.TextInputStyle.short,
+                min_length=3,
+                max_length=16,
+                required=True,
+            ),
+            disnake.ui.TextInput(
+                label="Ссылка на тикток",
+                custom_id="tiktok_url",
+                style=disnake.TextInputStyle.short,
+                placeholder="https://www.tiktok.com/...",
+                max_length=300,
+                required=True,
+            ),
+        ]
+        super().__init__(title="Заявка на вознаграждение", custom_id="lunacy_ticket:modal:reward", components=components)
+
+    async def callback(self, interaction: disnake.ModalInteraction):
+        nickname = interaction.text_values["nickname"].strip()
+        if not MC_NICKNAME_RE.fullmatch(nickname):
+            await interaction.response.send_message(
+                "Ник должен быть Minecraft-ником: 3-16 символов, латиница, цифры и подчёркивание.",
+                ephemeral=True,
+            )
+            return
+
+        await create_ticket_channel(
+            interaction=interaction,
+            ticket_type="reward",
+            title="🎁 Заявка на вознаграждение",
+            description="Новая заявка на получение вознаграждения Lunacy.",
+            nickname=nickname,
+            fields=[
+                ("1) Ваш игровой ник", nickname),
+                ("2) Ссылка на тикток", interaction.text_values["tiktok_url"]),
             ],
         )
 
@@ -716,6 +775,8 @@ class CommonTicketControlView(BaseTicketControlView):
             return "Жалоба"
         if ticket_type == "suggestion":
             return "Предложение"
+        if ticket_type == "reward":
+            return "Вознаграждение"
         return "Тикет"
 
     @disnake.ui.button(
@@ -759,6 +820,7 @@ class TicketsCog(commands.Cog):
         self.bot.add_view(PassTicketPanelView())
         self.bot.add_view(ComplaintTicketPanelView())
         self.bot.add_view(SuggestionTicketPanelView())
+        self.bot.add_view(RewardTicketPanelView())
         self.bot.add_view(PassTicketControlView())
         self.bot.add_view(CommonTicketControlView())
         self._persistent_views_registered = True
@@ -777,6 +839,9 @@ class TicketsCog(commands.Cog):
         elif ticket_type == "suggestion":
             title = "✨ Lunacy | Предложения"
             description = "Нажмите кнопку ниже, чтобы предложить идею или сообщить о баге."
+        elif ticket_type == "reward":
+            title = "🎁 Lunacy | Вознаграждения"
+            description = "Нажмите кнопку ниже, чтобы подать заявку на получение вознаграждения."
         else:
             title = "🌙 Lunacy | Тикеты"
             description = "Нажмите кнопку ниже, чтобы открыть тикет."
@@ -800,6 +865,11 @@ class TicketsCog(commands.Cog):
     async def setup_suggestion_tickets(self, interaction: disnake.ApplicationCommandInteraction):
         await interaction.response.send_message(embed=self.panel_embed("suggestion"), view=SuggestionTicketPanelView())
 
+    @commands.slash_command(name="setup_reward_tickets", description="Создать сообщение для заявок на вознаграждения")
+    @commands.has_permissions(administrator=True)
+    async def setup_reward_tickets(self, interaction: disnake.ApplicationCommandInteraction):
+        await interaction.response.send_message(embed=self.panel_embed("reward"), view=RewardTicketPanelView())
+
     @commands.command(name="setup_pass_tickets")
     @commands.has_permissions(administrator=True)
     async def setup_pass_tickets_prefix(self, ctx: commands.Context):
@@ -814,6 +884,11 @@ class TicketsCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def setup_suggestion_tickets_prefix(self, ctx: commands.Context):
         await ctx.send(embed=self.panel_embed("suggestion"), view=SuggestionTicketPanelView())
+
+    @commands.command(name="setup_reward_tickets")
+    @commands.has_permissions(administrator=True)
+    async def setup_reward_tickets_prefix(self, ctx: commands.Context):
+        await ctx.send(embed=self.panel_embed("reward"), view=RewardTicketPanelView())
 
 
 def setup(bot: commands.Bot):
