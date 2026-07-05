@@ -116,6 +116,38 @@ async def send_dm(
         return False
 
 
+async def set_member_minecraft_nickname(
+    member: disnake.Member,
+    nickname: str,
+    moderator: disnake.abc.User,
+) -> tuple[bool, str | None]:
+    if member.display_name == nickname or member.nick == nickname:
+        return True, None
+
+    if member.guild.owner_id == member.id:
+        return False, "Ник не изменён: Discord не позволяет менять ник владельцу сервера."
+
+    try:
+        await member.edit(nick=nickname, reason=f"Whitelist ticket approved by {moderator}")
+        return True, None
+    except disnake.Forbidden:
+        logger.warning(
+            "Cannot change nickname of %s to %s: missing Discord permissions or role hierarchy.",
+            member.id,
+            nickname,
+        )
+        return (
+            False,
+            "Ник не изменён: у бота нет права Manage Nicknames или его роль ниже роли участника.",
+        )
+    except disnake.HTTPException as error:
+        logger.exception("Cannot change nickname of %s to %s", member.id, nickname)
+        return False, f"Ник не изменён: Discord API вернул ошибку `{error}`."
+    except Exception as error:
+        logger.exception("Unexpected nickname change error")
+        return False, f"Ник не изменён: `{error}`."
+
+
 async def get_or_create_category(guild: disnake.Guild) -> disnake.CategoryChannel | None:
     if config.TICKET_CATEGORY_ID:
         category = guild.get_channel(config.TICKET_CATEGORY_ID)
@@ -661,6 +693,8 @@ class PassTicketControlView(BaseTicketControlView):
         role_granted = False
         role_status = "Роль выдана."
         remove_role_status: str | None = None
+        nickname_changed = False
+        nickname_status: str | None = None
         if member and role:
             try:
                 await member.add_roles(role, reason=f"Whitelist ticket approved by {interaction.user}")
@@ -713,6 +747,15 @@ class PassTicketControlView(BaseTicketControlView):
                     logger.exception("Unexpected role removal error")
                     remove_role_status = f"Не удалось снять старую роль: `{error}`."
 
+        if member:
+            nickname_changed, nickname_status = await set_member_minecraft_nickname(
+                member,
+                meta.nickname,
+                interaction.user,
+            )
+        else:
+            nickname_status = "Ник не изменён: автор тикета не найден на Discord-сервере."
+
         dm_sent = await send_dm(
             interaction,
             title="Lunacy | Заявка одобрена",
@@ -732,12 +775,20 @@ class PassTicketControlView(BaseTicketControlView):
             embed.add_field(name="Роль", value=role_status, inline=False)
         if remove_role_status:
             embed.add_field(name="Снятие роли", value=remove_role_status, inline=False)
+        if not nickname_changed and nickname_status:
+            embed.add_field(name="Ник Discord", value=nickname_status, inline=False)
         if not dm_sent:
             embed.add_field(name="ЛС", value="Не удалось отправить сообщение автору тикета.", inline=False)
 
         await interaction.channel.send(embed=embed)
         if role_granted:
-            await interaction.followup.send("Готово: игрок добавлен в whitelist и получил роль.", ephemeral=True)
+            if nickname_changed:
+                await interaction.followup.send("Готово: игрок добавлен в whitelist, получил роль, Discord-ник изменён.", ephemeral=True)
+            else:
+                await interaction.followup.send(
+                    "Готово: игрок добавлен в whitelist и получил роль, но Discord-ник не удалось изменить. Подробности в тикете.",
+                    ephemeral=True,
+                )
         else:
             await interaction.followup.send(
                 "Whitelist выполнен, ЛС отправлено при возможности, но роль не удалось выдать. Подробности в тикете.",
