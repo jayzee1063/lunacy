@@ -162,6 +162,27 @@ async def get_or_create_category(guild: disnake.Guild) -> disnake.CategoryChanne
     return await guild.create_category(config.TICKET_CATEGORY_NAME, reason="Lunacy ticket system setup")
 
 
+async def get_closed_ticket_category(guild: disnake.Guild) -> disnake.CategoryChannel | None:
+    if not config.CLOSED_TICKET_CATEGORY_ID:
+        return None
+
+    category = guild.get_channel(config.CLOSED_TICKET_CATEGORY_ID)
+    if isinstance(category, disnake.CategoryChannel):
+        return category
+
+    try:
+        fetched = await guild.fetch_channel(config.CLOSED_TICKET_CATEGORY_ID)
+    except disnake.DiscordException:
+        logger.warning("Closed ticket category with ID %s was not found.", config.CLOSED_TICKET_CATEGORY_ID)
+        return None
+
+    if isinstance(fetched, disnake.CategoryChannel):
+        return fetched
+
+    logger.warning("Channel with ID %s is not a category.", config.CLOSED_TICKET_CATEGORY_ID)
+    return None
+
+
 def support_roles(guild: disnake.Guild) -> list[disnake.Role]:
     return [role for role_id in config.SUPPORT_ROLE_IDS if (role := guild.get_role(role_id))]
 
@@ -206,6 +227,35 @@ def build_ticket_overwrites(
         )
 
     return overwrites
+
+
+async def archive_ticket_channel(
+    channel: disnake.TextChannel,
+    guild: disnake.Guild,
+    meta: TicketMeta | None,
+    closed_by: disnake.User | disnake.Member,
+) -> None:
+    category = await get_closed_ticket_category(guild)
+    reason = f"Ticket closed by {closed_by}"
+
+    if meta:
+        owner_target: disnake.Member | disnake.Object | None = guild.get_member(meta.owner_id)
+        if owner_target is None:
+            owner_target = disnake.Object(id=meta.owner_id)
+
+        await channel.set_permissions(
+            owner_target,
+            overwrite=disnake.PermissionOverwrite(view_channel=False),
+            reason=reason,
+        )
+
+    if category:
+        await channel.edit(category=category, sync_permissions=False, reason=reason)
+    else:
+        logger.warning(
+            "Closed ticket category is not configured or unavailable; ticket channel %s was left in the current category.",
+            channel.id,
+        )
 
 
 async def create_ticket_channel(
@@ -640,7 +690,12 @@ class BaseTicketControlView(disnake.ui.View):
         await interaction.response.send_message(embed=embed)
 
     async def close_ticket(self, interaction: disnake.MessageInteraction):
-        meta = parse_ticket_topic(interaction.channel.topic if isinstance(interaction.channel, disnake.TextChannel) else None)
+        channel = interaction.channel
+        if not isinstance(channel, disnake.TextChannel) or not interaction.guild:
+            await interaction.response.send_message("Эта кнопка работает только внутри текстового тикета.", ephemeral=True)
+            return
+
+        meta = parse_ticket_topic(channel.topic)
         is_owner = meta and interaction.user.id == meta.owner_id
         is_allowed_staff = isinstance(interaction.user, disnake.Member) and is_staff(interaction.user)
 
@@ -649,9 +704,9 @@ class BaseTicketControlView(disnake.ui.View):
             return
 
         await interaction.response.send_message("Тикет будет закрыт и удалён через 5 секунд.", ephemeral=True)
-        await interaction.channel.send("🌙 Тикет закрывается...")
+        await channel.send("🌙 Тикет закрывается...")
         await asyncio.sleep(5)
-        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+        await archive_ticket_channel(channel, interaction.guild, meta, interaction.user)
 
 
 class PassTicketControlView(BaseTicketControlView):
