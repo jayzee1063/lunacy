@@ -18,6 +18,7 @@ class LunacyTicketsBot(commands.Bot):
         intents = disnake.Intents.default()
         intents.guilds = True
         intents.members = True
+        intents.moderation = True
         intents.message_content = True
 
         kwargs = {"intents": intents, "command_prefix": config.COMMAND_PREFIX}

@@ -14,12 +14,15 @@ import disnake
 from disnake.ext import commands
 
 import config
+from whitelist_links import WhitelistLinkStore
 
 
 logger = logging.getLogger("LunacyTickets.Tickets")
 
 MC_NICKNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 CHANNEL_SAFE_RE = re.compile(r"[^a-z0-9_-]+")
+WHITELIST_LINKS = WhitelistLinkStore(config.WHITELIST_LINKS_DB)
+WHITELIST_CLEANUP_LOCK = asyncio.Lock()
 
 
 class RconError(Exception):
@@ -366,6 +369,51 @@ def run_whitelist_command(nickname: str) -> str:
     command = config.WHITELIST_COMMAND_TEMPLATE.format(nickname=nickname)
     command = command[1:] if command.startswith("/") else command
     return run_rcon_command(command)
+
+
+def run_unwhitelist_command(nickname: str) -> str:
+    command = config.UNWHITELIST_COMMAND_TEMPLATE.format(nickname=nickname)
+    command = command[1:] if command.startswith("/") else command
+    return run_rcon_command(command)
+
+
+async def remove_member_from_whitelist(guild_id: int, user_id: int, reason: str) -> None:
+    """Remove all stored Minecraft nicknames for a departed Discord member.
+
+    A link is deleted only after the RCON command succeeds. If Minecraft is
+    temporarily unavailable, the database entry remains and startup
+    reconciliation will retry it after the next bot reconnect/restart.
+    """
+
+    async with WHITELIST_CLEANUP_LOCK:
+        links = await asyncio.to_thread(WHITELIST_LINKS.links_for_member, guild_id, user_id)
+        if not links:
+            return
+
+        for link in links:
+            try:
+                response = await asyncio.to_thread(run_unwhitelist_command, link.nickname)
+            except Exception:
+                logger.exception(
+                    "Failed to remove Minecraft nickname %s for departed Discord member %s "
+                    "from guild %s (%s). The link was retained for retry.",
+                    link.nickname,
+                    user_id,
+                    guild_id,
+                    reason,
+                )
+                continue
+
+            await asyncio.to_thread(WHITELIST_LINKS.forget, link)
+            logger.info(
+                "Removed Minecraft nickname %s from whitelist because Discord member %s "
+                "left guild %s (%s). RCON response: %s",
+                link.nickname,
+                user_id,
+                guild_id,
+                reason,
+                response.strip() or "<empty>",
+            )
 
 
 class PassTicketPanelView(disnake.ui.View):
@@ -732,6 +780,11 @@ class PassTicketControlView(BaseTicketControlView):
             await interaction.response.send_message("Ник в тикете некорректный, whitelist-команда отменена.", ephemeral=True)
             return
 
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Эта кнопка работает только на Discord-сервере.", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -741,9 +794,36 @@ class PassTicketControlView(BaseTicketControlView):
             await interaction.followup.send(f"RCON не выполнил whitelist-команду: `{error}`", ephemeral=True)
             return
 
-        guild = interaction.guild
-        member = guild.get_member(meta.owner_id) if guild else None
-        role = guild.get_role(config.ACCEPTED_ROLE_ID) if guild and config.ACCEPTED_ROLE_ID else None
+        try:
+            await asyncio.to_thread(
+                WHITELIST_LINKS.remember,
+                guild.id,
+                meta.owner_id,
+                meta.nickname,
+            )
+        except Exception as error:
+            logger.exception(
+                "Failed to persist whitelist link for Discord member %s and Minecraft nickname %s",
+                meta.owner_id,
+                meta.nickname,
+            )
+            rollback_error: Exception | None = None
+            try:
+                await asyncio.to_thread(run_unwhitelist_command, meta.nickname)
+            except Exception as caught_error:
+                rollback_error = caught_error
+                logger.exception("Failed to roll back whitelist after database error")
+
+            message = f"Не удалось сохранить связь Discord с Minecraft-ником: `{error}`."
+            if rollback_error:
+                message += " Автоматический откат whitelist также не удался — проверьте сервер вручную."
+            else:
+                message += " Добавление в whitelist отменено."
+            await interaction.followup.send(message, ephemeral=True)
+            return
+
+        member = guild.get_member(meta.owner_id)
+        role = guild.get_role(config.ACCEPTED_ROLE_ID) if config.ACCEPTED_ROLE_ID else None
 
         role_granted = False
         role_status = "Роль выдана."
@@ -917,20 +997,122 @@ class TicketsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._persistent_views_registered = False
+        self._backfill_completed = False
+        self._reconcile_task: asyncio.Task | None = None
+        WHITELIST_LINKS.initialize()
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if self._persistent_views_registered:
+        if not self._persistent_views_registered:
+            self.bot.add_view(PassTicketPanelView())
+            self.bot.add_view(ComplaintTicketPanelView())
+            self.bot.add_view(SuggestionTicketPanelView())
+            self.bot.add_view(RewardTicketPanelView())
+            self.bot.add_view(PassTicketControlView())
+            self.bot.add_view(CommonTicketControlView())
+            self._persistent_views_registered = True
+            logger.info("Persistent ticket views registered.")
+
+        if not self._reconcile_task or self._reconcile_task.done():
+            self._reconcile_task = asyncio.create_task(
+                self._whitelist_reconcile_loop(),
+                name="lunacy-whitelist-reconcile",
+            )
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: disnake.Member):
+        await remove_member_from_whitelist(member.guild.id, member.id, "member left guild")
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: disnake.Guild, user: disnake.User):
+        await remove_member_from_whitelist(guild.id, user.id, "member banned")
+
+    def cog_unload(self):
+        if self._reconcile_task and not self._reconcile_task.done():
+            self._reconcile_task.cancel()
+
+    async def _whitelist_reconcile_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            try:
+                if not self._backfill_completed:
+                    await self._backfill_accepted_members()
+                    self._backfill_completed = True
+                await self._reconcile_departed_members()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Unexpected whitelist reconciliation error")
+
+            await asyncio.sleep(config.WHITELIST_RECONCILE_INTERVAL_SECONDS)
+
+    async def _backfill_accepted_members(self) -> None:
+        if not config.WHITELIST_BACKFILL_FROM_ACCEPTED_ROLE or not config.ACCEPTED_ROLE_ID:
             return
 
-        self.bot.add_view(PassTicketPanelView())
-        self.bot.add_view(ComplaintTicketPanelView())
-        self.bot.add_view(SuggestionTicketPanelView())
-        self.bot.add_view(RewardTicketPanelView())
-        self.bot.add_view(PassTicketControlView())
-        self.bot.add_view(CommonTicketControlView())
-        self._persistent_views_registered = True
-        logger.info("Persistent ticket views registered.")
+        imported = 0
+        for guild in self.bot.guilds:
+            role = guild.get_role(config.ACCEPTED_ROLE_ID)
+            if not role:
+                continue
+
+            try:
+                await guild.chunk(cache=True)
+            except disnake.DiscordException:
+                logger.warning(
+                    "Could not populate member cache for whitelist backfill in guild %s.",
+                    guild.id,
+                )
+
+            for member in role.members:
+                nickname = member.display_name.strip()
+                if member.bot or not MC_NICKNAME_RE.fullmatch(nickname):
+                    continue
+                await asyncio.to_thread(WHITELIST_LINKS.remember, guild.id, member.id, nickname)
+                imported += 1
+
+        logger.info("Whitelist link backfill completed: %s accepted Discord members stored.", imported)
+
+    async def _reconcile_departed_members(self) -> None:
+        links = await asyncio.to_thread(WHITELIST_LINKS.all_links)
+        checked_members: dict[tuple[int, int], bool] = {}
+
+        for link in links:
+            key = (link.guild_id, link.discord_user_id)
+            is_present = checked_members.get(key)
+            if is_present is None:
+                guild = self.bot.get_guild(link.guild_id)
+                if not guild:
+                    # Never remove a player merely because the bot is temporarily absent
+                    # from, or has not cached, the Discord guild.
+                    checked_members[key] = True
+                    continue
+
+                member = guild.get_member(link.discord_user_id)
+                if member:
+                    is_present = True
+                else:
+                    try:
+                        await guild.fetch_member(link.discord_user_id)
+                        is_present = True
+                    except disnake.NotFound:
+                        is_present = False
+                    except (disnake.Forbidden, disnake.HTTPException):
+                        logger.warning(
+                            "Could not verify Discord member %s in guild %s; whitelist was not changed.",
+                            link.discord_user_id,
+                            link.guild_id,
+                        )
+                        is_present = True
+
+                checked_members[key] = is_present
+
+            if not is_present:
+                await remove_member_from_whitelist(
+                    link.guild_id,
+                    link.discord_user_id,
+                    "periodic reconciliation",
+                )
 
     def panel_embed(self, ticket_type: str) -> disnake.Embed:
         if ticket_type == "pass":

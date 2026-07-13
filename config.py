@@ -55,6 +55,22 @@ CLOSED_TICKET_CATEGORY_ID = _int_env("CLOSED_TICKET_CATEGORY_ID", 15183404091920
 RULES_CHANNEL_ID = _int_env("RULES_CHANNEL_ID", 1516159088151761107)
 
 WHITELIST_COMMAND_TEMPLATE = os.getenv("WHITELIST_COMMAND_TEMPLATE", "swl add {nickname}")
+UNWHITELIST_COMMAND_TEMPLATE = os.getenv("UNWHITELIST_COMMAND_TEMPLATE", "swl remove {nickname}")
+
+_whitelist_links_db = Path(os.getenv("WHITELIST_LINKS_DB", "data/whitelist_links.sqlite3"))
+WHITELIST_LINKS_DB = (
+    _whitelist_links_db
+    if _whitelist_links_db.is_absolute()
+    else BASE_DIR / _whitelist_links_db
+)
+WHITELIST_BACKFILL_FROM_ACCEPTED_ROLE = os.getenv(
+    "WHITELIST_BACKFILL_FROM_ACCEPTED_ROLE",
+    "true",
+).strip().lower() in {"1", "true", "yes", "on"}
+WHITELIST_RECONCILE_INTERVAL_SECONDS = max(
+    60,
+    _int_env("WHITELIST_RECONCILE_INTERVAL_SECONDS", 600),
+)
 
 LUNACY_PURPLE = 0xAC26FF
 LUNACY_DARK = 0x27123D
