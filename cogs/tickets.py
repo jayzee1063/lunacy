@@ -484,7 +484,7 @@ class PassTicketModal(disnake.ui.Modal):
                 required=True,
             ),
             disnake.ui.TextInput(
-                label="Откуда узнали о проекте",
+                label="Чем планируете заниматься на сервере и чего ждёте от проекта",
                 custom_id="source",
                 style=disnake.TextInputStyle.paragraph,
                 max_length=700,
