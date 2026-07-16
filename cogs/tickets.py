@@ -484,7 +484,7 @@ class PassTicketModal(disnake.ui.Modal):
                 required=True,
             ),
             disnake.ui.TextInput(
-                label="Занятия на сервере и ожидания от проекта",
+                label="Чем планируете заниматься на сервере?",
                 custom_id="plans",
                 style=disnake.TextInputStyle.paragraph,
                 placeholder="Чем планируете заниматься на сервере и что ожидаете от игры на проекте",
