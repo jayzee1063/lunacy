@@ -484,8 +484,8 @@ class PassTicketModal(disnake.ui.Modal):
                 required=True,
             ),
             disnake.ui.TextInput(
-                label="Чем планируете заниматься на сервере и чего ждёте от проекта",
-                custom_id="source",
+                label="Чем планируете заниматься на сервере и что ожидаете от игры на проекте",
+                custom_id="plans",
                 style=disnake.TextInputStyle.paragraph,
                 max_length=700,
                 required=True,
@@ -533,7 +533,7 @@ class PassTicketModal(disnake.ui.Modal):
             nickname=nickname,
             fields=[
                 ("1) Ваш игровой ник", nickname),
-                ("2) Откуда узнали о проекте", interaction.text_values["source"]),
+                ("2) Чем планируете заниматься на сервере и что ожидаете от игры на проекте", interaction.text_values["plans"]),
                 ("3) Ваш возраст (14+)", interaction.text_values["age"]),
                 ("4) Имеете ли возможность играть с войсом", interaction.text_values["voice"]),
                 ("5) Кодовое слово из правил", interaction.text_values["codeword"]),
